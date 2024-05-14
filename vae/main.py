@@ -14,18 +14,25 @@ parser.add_argument('--batch-size', type=int, default=128, metavar='N',
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 10)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
-                    help='enables CUDA training')
+                    help='disables CUDA training')
+parser.add_argument('--no-mps', action='store_true', default=False,
+                        help='disables macOS GPU training')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-
+use_mps = not args.no_mps and torch.backends.mps.is_available()
 
 torch.manual_seed(args.seed)
 
-device = torch.device("cuda" if args.cuda else "cpu")
+if args.cuda:
+    device = torch.device("cuda")
+elif use_mps:
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 train_loader = torch.utils.data.DataLoader(
@@ -34,7 +41,7 @@ train_loader = torch.utils.data.DataLoader(
     batch_size=args.batch_size, shuffle=True, **kwargs)
 test_loader = torch.utils.data.DataLoader(
     datasets.MNIST('../data', train=False, transform=transforms.ToTensor()),
-    batch_size=args.batch_size, shuffle=True, **kwargs)
+    batch_size=args.batch_size, shuffle=False, **kwargs)
 
 
 class VAE(nn.Module):
@@ -52,16 +59,13 @@ class VAE(nn.Module):
         return self.fc21(h1), self.fc22(h1)
 
     def reparameterize(self, mu, logvar):
-        if self.training:
-            std = torch.exp(0.5*logvar)
-            eps = torch.randn_like(std)
-            return eps.mul(std).add_(mu)
-        else:
-            return mu
+        std = torch.exp(0.5*logvar)
+        eps = torch.randn_like(std)
+        return mu + eps*std
 
     def decode(self, z):
         h3 = F.relu(self.fc3(z))
-        return F.sigmoid(self.fc4(h3))
+        return torch.sigmoid(self.fc4(h3))
 
     def forward(self, x):
         mu, logvar = self.encode(x.view(-1, 784))
@@ -75,7 +79,7 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
 # Reconstruction + KL divergence losses summed over all elements and batch
 def loss_function(recon_x, x, mu, logvar):
-    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 784), size_average=False)
+    BCE = F.binary_cross_entropy(recon_x, x.view(-1, 784), reduction='sum')
 
     # see Appendix B from VAE paper:
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
@@ -125,12 +129,12 @@ def test(epoch):
     test_loss /= len(test_loader.dataset)
     print('====> Test set loss: {:.4f}'.format(test_loss))
 
-
-for epoch in range(1, args.epochs + 1):
-    train(epoch)
-    test(epoch)
-    with torch.no_grad():
-        sample = torch.randn(64, 20).to(device)
-        sample = model.decode(sample).cpu()
-        save_image(sample.view(64, 1, 28, 28),
-                   'results/sample_' + str(epoch) + '.png')
+if __name__ == "__main__":
+    for epoch in range(1, args.epochs + 1):
+        train(epoch)
+        test(epoch)
+        with torch.no_grad():
+            sample = torch.randn(64, 20).to(device)
+            sample = model.decode(sample).cpu()
+            save_image(sample.view(64, 1, 28, 28),
+                       'results/sample_' + str(epoch) + '.png')
